@@ -2,9 +2,11 @@
 // @name        Episode Thumbnail Progress Bar for Miruro
 // @namespace   https://github.com/jeryjs
 // @match       https://www.miruro.tv/*
+// @match       https://www.miruro.to/*
+// @match       https://www.miruro.online/*
 // @icon        https://www.miruro.tv/icons/favicon-32x32.png
 // @grant       none
-// @version     1.2
+// @version     1.4
 // @author      Jery
 // @description 2/23/2025, 9:39:09 AM
 // ==/UserScript==
@@ -24,15 +26,15 @@ const miruro = {
 	// Returns the SPA element that should be observed for changes
 	observeTarget: () => document.querySelector('section[aria-labelledby*="continueWatching"] + div'),
 	// Retrieves progress data from localStorage
-	progressData: () => getFromStorage("all-episode-times"),
+	progressData: () => getFromStorage("miruro:watching:playback"),
 	// Retrieves watched episodes data from localStorage
-	watchedData: () => getFromStorage("all-watched-episodes"),
+	watchedData: () => getFromStorage("miruro:watching:history"),
 	// Returns the parent element of the thumbnail that the progress bar should be injected under
 	getProgressBarAnchor: (item) => item.querySelector('img[alt^="Play "]')?.parentElement?.parentElement,
 	// Extracts the anime ID from the item's href query parameter (?id=...)
 	getAnimeId: (item) => {
 		const href = item.getAttribute("href") || "";
-		const idMatch = href.match(/[?&]id=([^&]+)/);
+		const idMatch = href.match(/watch\/([^&]+)\//);
 		return idMatch ? idMatch[1] : "";
 	},
 	// Extracts the episode number from the item's specific DOM structure
@@ -109,7 +111,7 @@ console.log("AniMARK: Injecting progress bars under episode thumbnails...");
 	// Polls for the target container; once detected, attaches the observer
 	function pollForTarget(target) {
 		if (target) {
-			updateProgressBars();
+			setTimeout(updateProgressBars, 500);
 			attachObserver();
 		} else {
 			setTimeout(() => pollForTarget(miruro.observeTarget()), 1000);
@@ -124,6 +126,7 @@ console.log("AniMARK: Injecting progress bars under episode thumbnails...");
 			if (url !== lastUrl) {
 				lastUrl = url;
 				console.log("URL changed, re-running AniMARK");
+				setTimeout(updateProgressBars, 500);
 				attachObserver();
 			}
 		}).observe(document.querySelector("body"), { subtree: true, childList: true });

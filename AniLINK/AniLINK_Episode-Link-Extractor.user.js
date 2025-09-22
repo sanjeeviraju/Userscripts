@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name        AniLINK - Episode Link Extractor
 // @namespace   https://greasyfork.org/en/users/781076-jery-js
-// @version     6.15.4
+// @version     6.15.7
 // @description Stream or download your favorite anime series effortlessly with AniLINK! Unlock the power to play any anime series directly in your preferred video player or download entire seasons in a single click using popular download managers like IDM. AniLINK generates direct download links for all episodes, conveniently sorted by quality. Elevate your anime-watching experience now!
 // @icon        https://www.google.com/s2/favicons?domain=animepahe.ru
 // @author      Jery
 // @license     MIT
 // @match       https://anitaku.*/*
-// @match       https://anitaku.bz/*
+// @match       https://anitaku.io/*
 // @match       https://gogoanime.*/*
 // @match       https://gogoanime3.cc/*
 // @match       https://gogoanime3.*/*
@@ -27,9 +27,9 @@
 // @match       https://animeheaven.me/anime.php?*
 // @match       https://animez.org/*/*
 // @match       https://animeyy.com/*/*
-// @match       https://*.miruro.to/watch?id=*
-// @match       https://*.miruro.tv/watch?id=*
-// @match       https://*.miruro.online/watch?id=*
+// @match       https://*.miruro.to/watch/*
+// @match       https://*.miruro.tv/watch/*
+// @match       https://*.miruro.online/watch/*
 // @match       https://anizone.to/anime/*
 // @match       https://anixl.to/title/*
 // @match       https://sudatchi.com/watch/*/*
@@ -137,7 +137,7 @@ class Episode {
 const Websites = [
     {
         name: 'GoGoAnime',
-        url: ['anitaku.to/', 'gogoanime3.co/', 'gogoanime3', 'anitaku', 'gogoanime'],
+        url: ['anitaku.to/', 'gogoanime3.co/', 'gogoanime3', 'anitaku.bz', 'gogoanime'],
         epLinks: '#episode_related > li > a',
         epTitle: '.title_name > h2',
         linkElems: '.cf-download > a',
@@ -176,6 +176,30 @@ const Websites = [
 
                 yield* yieldEpisodesFromPromises(episodePromises); // Use helper function
             }
+        }
+    },
+    {
+        name: "Anitaku",
+        url: ['anitaku.io'],
+        extractEpisodes: async function* (status) {
+            const epLinks = document.querySelectorAll('.episodelist li > a');
+            for (let i = 0, l = [...await applyEpisodeRangeFilter(epLinks)]; i < l.length; i += 12)
+                yield* yieldEpisodesFromPromises(l.slice(i, i + 12).map(async a => {
+                    const pg = await fetchPage(a.href);
+                    const epNum = a.href.match(/-episode-(\d+)-/)[1];
+                    status.text = `Extracting Episodes ${(epNum-Math.min(1, epNum)+1)} - ${epNum}...`;
+                    const links = {};
+                    for (const [sel, name, attr, ref] of [['.fa-cloud-download-alt', u => 'GoFile', 'href', 0], ['iframe', u => u.includes('megaplay') ? 'MegaPlay' : 'VKSpeed', 'src', 1]]) {
+                        try {
+                            const el = pg.querySelector(sel);
+                            if (!el) continue;
+                            const url = attr === 'href' ? el.closest('a')[attr] : el[attr];
+                            const src = await Extractors.use(url, ref ? location.href : undefined);
+                            links[typeof name === 'function' ? name(url) : name] = { stream: src.file, tracks: src.tracks || [], type: src.type || 'm3u8', ...(ref && { referer: location.href }) };
+                        } catch (e) { showToast(`${typeof name === 'function' ? 'iframe' : name} error ep ${epNum}: ${e}`); }
+                    }
+                    return new Episode(epNum, pg.querySelector('.det > h2 > a').textContent.trim(), links, pg.querySelector('img').src);
+                }));
         }
     },
     {
@@ -619,16 +643,19 @@ const Websites = [
         _chunkSize: 6, // Number of episodes to extract in parallel
         _decryptUrl: async (encryptedUrl) => (new TextDecoder()).decode(await crypto.subtle.decrypt({ name: 'AES-CBC', iv: (encryptedBytes => encryptedBytes.slice(0, 16))(Uint8Array.from(atob(encryptedUrl), c => c.charCodeAt(0))) }, await crypto.subtle.importKey('raw', (new TextEncoder()).encode('superaninowq8hgl1'.padEnd(32, '\0').slice(0, 32)), { name: 'AES-CBC' }, false, ['decrypt']), (encryptedBytes => encryptedBytes.slice(16))(Uint8Array.from(atob(encryptedUrl), c => c.charCodeAt(0))))),
         extractEpisodes: async function* (status) {
-            for (let i = 0, l = await applyEpisodeRangeFilter([...document.querySelectorAll('a.episode-item')]); i < l.length; i+=this._chunkSize)
+            for (let i = 0, l = await applyEpisodeRangeFilter([...document.querySelectorAll('a[data-episode]')]); i < l.length; i+=this._chunkSize)
                 yield* yieldEpisodesFromPromises(l.slice(i, i + this._chunkSize).map(async a => {
                     const epNum = a.innerText;
                     status.text = `Extracting Episodes ${(epNum-Math.min(this._chunkSize, epNum)+1)} - ${epNum}...`;
                     const data = await fetchPage(a.href).then(p => JSON.parse(p.querySelector("#media-sources-data").dataset.mediaSources)).then(d => d.filter(l => !!l.url));
-                    const links = await data.reduce(async (acc, m) => ({...acc, [`${m.providerdisplayname}-${m.language}-${m.quality}`]: {
-                        stream: m.url.startsWith('videos/') ? await this._decryptUrl((await fetch('https://aninow.tv/api/presigned/media/' + m.url).then(r => r.json())).url) : m.url,
-                        type: m.url.endsWith('mp4') ? 'mp4' : 'm3u8',
-                        tracks: m.subtitles.map(s => ({ file: s.filename, label: s.displayname, kind: 'caption' }))
-                    }}), {});
+                    const links = Object.fromEntries(await Promise.all(data.map(async m => [
+                        `${m.providerdisplayname}-${m.language}-${m.quality}`,
+                        {
+                            stream: !m.url.startsWith('videos/') ? m.url : await this._decryptUrl((await fetch('https://aninow.tv/api/presigned/media/' + m.url).then(r => r.json())).url),
+                            type: m.url.endsWith('mp4') ? 'mp4' : 'm3u8',
+                            tracks: m.subtitles.map(s => ({ file: s.filename.startsWith('subtitles/') ? 'https://aninow.tv/api/subtitles/C:/Users/GraceAshby/OneDrive/aninow-copy/subzzzzzz/' + s.filename : s.filename, label: s.displayname, kind: 'caption' }))
+                        }
+                    ])));
                     return new Episode(epNum.padStart(3, '0'), document.querySelector('h1').innerText, links, document.querySelector('a>img').src);
                 }));
         },
@@ -665,7 +692,8 @@ const Extractors = {
     'megaplay.buzz': async function (embed, referer) {
         referer = referer || 'https://megaplay.buzz/';
         const id = await fetch(embed, { headers: { Referer: referer } }).then(r=>r.text()).then(t => t.match(/<title>File ([0-9]+)/)[1]);
-        return await fetch('https://megaplay.buzz/stream/getSources?id=' + id, { headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(e => e.json())
+        const src = await GM_fetch('https://megaplay.buzz/stream/getSources?id=' + id, { headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(e => e.json())
+        return { file: src.sources?.file, type: 'm3u8', tracks: src.tracks || []}
     },
     'megacloud.blog': async function (embed, referer) {
         // adapted from https://github.com/middlegear/hakai-extensions/blob/main/src/utils/getClientKey.ts
@@ -726,9 +754,37 @@ const Extractors = {
         if (data.error) throw new Error(data.error);
         showToast(`Couldnt decrypt sources for ${embed}`);
         return { file: embed, type: 'embed', tracks: data?.tracks }
+    },
+    'gofile.io': async function (url) {
+        const id = url.split('/').pop();
+        const stored = JSON.parse(localStorage.gofile_token || '{}');
+        let token = stored.token;
+        if (!token || Date.now() - stored.timestamp > 604800000) {
+            if (token !== 'fetching') {
+                localStorage.gofile_token = JSON.stringify({ token: 'fetching', timestamp: Date.now() });
+                token = (await GM_fetch('https://api.gofile.io/accounts', { method: 'POST', body: '{}' }).then(r => r.json())).data.token;
+                localStorage.gofile_token = JSON.stringify({ token, timestamp: Date.now() });
+            } else {
+                while ((token = JSON.parse(localStorage.gofile_token || '{}').token) === 'fetching') await new Promise(r => setTimeout(r, 500));
+            }
+        }
+        const data = await GM_fetch(`https://api.gofile.io/contents/${id}?wt=4fd6sg89d7s6`, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
+        if (data.status !== 'ok') throw new Error(data.status);
+        const file = Object.values(data.data.children || {}).find(f => f.name?.endsWith('.m3u8') || f.mimetype?.startsWith('video/'));
+        if (!file) throw new Error('No video file found');
+        return { file: file.link, type: file.name?.endsWith('.m3u8') ? 'm3u8' : 'mp4', tracks: [] };
+    },
+    'vkspeed.com': async function(url) {
+        const html = await GM_fetch(url).then(r => r.text());
+        const [, e, r, c, d] = html.match(/eval\(function\(p,a,c,k,e,d\)\{while\(c--\)if\(k\[c\]\)p=p\.replace\(new RegExp\('\\\\b'\+c\.toString\(a\)\+'\\\\b','g'\),k\[c\]\);return p\}\('(.+?)',(\d+),(\d+),'(.+?)'\.split\('\|'\)\)\)/) || [];
+        if (!e) throw new Error('No packed script found');
+        let decoded = e; const dict = d.split('|');
+        for (let i = +c - 1; i >= 0; i--) if (dict[i]) decoded = decoded.replace(new RegExp('\\b' + i.toString(+r) + '\\b', 'g'), dict[i]);
+        const sources = eval(decoded.match(/sources:\[.*?\]/)[0]);
+        const source = sources.reduce((best, curr) => (s => parseInt(s.label) || 0)(curr) > (s => parseInt(s.label) || 0)(best) ? curr : best, sources[0]);
+        return { file: source.file, type: source.file.includes('.m3u8') ? 'm3u8' : 'mp4', tracks: [] };
     }
 }
-
 /**
  * Fetches the HTML content of a given URL and parses it into a DOM object.
  *

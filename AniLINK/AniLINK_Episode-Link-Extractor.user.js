@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        AniLINK - Episode Link Extractor
 // @namespace   https://greasyfork.org/en/users/781076-jery-js
-// @version     6.15.7
+// @version     6.21.0
 // @description Stream or download your favorite anime series effortlessly with AniLINK! Unlock the power to play any anime series directly in your preferred video player or download entire seasons in a single click using popular download managers like IDM. AniLINK generates direct download links for all episodes, conveniently sorted by quality. Elevate your anime-watching experience now!
 // @icon        https://www.google.com/s2/favicons?domain=animepahe.ru
 // @author      Jery
@@ -27,9 +27,9 @@
 // @match       https://animeheaven.me/anime.php?*
 // @match       https://animez.org/*/*
 // @match       https://animeyy.com/*/*
-// @match       https://*.miruro.to/watch/*
-// @match       https://*.miruro.tv/watch/*
-// @match       https://*.miruro.online/watch/*
+// @match       https://*.miruro.to/*
+// @match       https://*.miruro.tv/*
+// @match       https://*.miruro.online/*
 // @match       https://anizone.to/anime/*
 // @match       https://anixl.to/title/*
 // @match       https://sudatchi.com/watch/*/*
@@ -39,6 +39,13 @@
 // @match       https://hianimeZ.*/watch/*
 // @match       https://aninow.tv/w/*
 // @match       https://www.animegg.org/*
+// @match       https://www.animeonsen.xyz/watch/*
+// @match       https://kaido.to/watch/*
+// @match       https://animetsu.cc/watch/*
+// @match       https://animekai.to/watch/*
+// @match       https://animekai.ac/watch/*
+// @match       https://animekai.cc/watch/*
+// @match       https://anikai.to/watch/*
 // @grant       GM_registerMenuCommand
 // @grant       GM_xmlhttpRequest
 // @grant       GM.xmlHttpRequest
@@ -62,7 +69,7 @@ class Episode {
     /**
      * @param {string} number - The episode number.
      * @param {string} animeTitle - The title of the anime.
-     * @param {Object.<string, {stream: string, type: '.m3u8'|'.mp4'|'embed', tracks: Array<{file: string, kind: 'caption'|'audio', label: string}>}>, referer: string} links - An object containing streaming links and tracks for each source along with the referer (for use in CORS requests).
+     * @param {Object.<string, {stream: string, type: '.m3u8'|'.mp4'|'.mpd'|'embed', tracks: Array<{file: string, kind: 'caption'|'audio', label: string}>}>, referer: string} links - An object containing streaming links and tracks for each source along with the referer (for use in CORS requests).
      * @param {string} thumbnail - The URL of the episode's thumbnail image.
      * @param {string} [epTitle] - The title of the episode (optional).
      */
@@ -477,10 +484,17 @@ const Websites = [
         thumbnail: 'a[href^="/info?id="] > img',
         baseApiUrl: `${location.origin}/api`,
         addStartButton: function (id) {
+            let last_known = { location: location.href, source: null };
             const intervalId = setInterval(() => {
+                const currSource = [...document.querySelectorAll('select')].slice(1).map(e => e.value).toString();
+                if (last_known.location !== location.href || last_known.source !== currSource) {
+                    last_known = { location: location.href, source: currSource };
+                    document.getElementById('AniLINK_Overlay')?.remove();
+                }
+                // Append the extract button
                 const target = document.querySelector('.App + div > div > div + div > div > div > div > div + div > div + div');
-                if (target) {
-                    clearInterval(intervalId);
+                if (target && !document.getElementById(id)) {
+                    // clearInterval(intervalId);
                     const btn = document.createElement('button');
                     btn.id = id;
                     btn.style.cssText = `${target.lastChild.style.cssText} display: flex; justify-content: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: auto;`;
@@ -492,7 +506,7 @@ const Websites = [
                     btn.addEventListener('click', extractEpisodes);
                     target.appendChild(btn);
                 }
-            }, 200);
+            }, 500);
         },
         extractEpisodes: async function* (status) {
             status.text = 'Fetching episode list...';
@@ -505,16 +519,19 @@ const Websites = [
                 Object.entries(episodes).forEach(([type, list]) => list.forEach(ep => (a[ep.number] ??= []).push({ ...ep, provider, type }))), a
             ), {});
 
-            for (const epNum of Object.keys(eps).sort((a, b) => a - b)) {
+            showToast('Found Providers: ' + Object.entries(Object.values(eps).flat().reduce((m, ep) => ((m[this._getLocalSourceName(ep.provider)] ??= new Set()).add(ep.type), m), {})).map(([p, t]) => `${p.toLowerCase()} (${[...t].join(', ')})`).join(', '));
+
+            for (const epNum of await applyEpisodeRangeFilter(Object.keys(eps).sort((a, b) => a - b))) {
                 const baseEp = eps[epNum][0];
                 status.text = `Fetching Ep ${epNum}...`;
                 const links = {};
                 await Promise.all(eps[epNum].map(async ({ id, provider, type }) => {
-                    if ([...document.querySelectorAll('select')].map(e => e.textContent).includes(this._getLocalSourceName(provider))) {
+                    if ([...document.querySelectorAll('select')][2].value.includes(provider.toLowerCase()) && [...document.querySelectorAll('select')][1].value.includes(type)) {
                         const source = this._getLocalSourceName(provider, type);
                         try {
-                            const sresJson = await this._secureFetch(`${this.baseApiUrl}/sources`, { query: { episodeId: id, provider } });
-                            links[this._getLocalSourceName(source)] = { stream: sresJson.streams[0].url, type: "m3u8", tracks: sresJson.tracks || [] };
+                            const sresJson = await this._secureFetch(`${this.baseApiUrl}/sources`, { query: { episodeId: id, provider, category: type } });
+                            const referer = provider == 'KICKASSANIME' ? 'https://kaa.to/' : provider == 'ZORO' ? 'https://megacloud.blog/' : location.href;
+                            links[this._getLocalSourceName(source)] = { stream: sresJson.streams[0].url, type: "m3u8", tracks: sresJson.tracks || [], referer };
                         } catch (e) { showToast(`Failed to fetch ep-${epNum} from ${source}: ${e}`); }
                     }
                 }));
@@ -542,7 +559,7 @@ const Websites = [
         epTitle: 'div.space-y-2 > div.text-center',
         epNumber: 'a[x-ref="activeEps"] > div > div',
         thumbnail: 'media-poster',
-        epLinks: () => [...new Set(Array.from(document.querySelectorAll('a[href^="https://anizone.to/anime/"]')).map(a => a.href))],
+        epLinks: () => [...new Set(Array.from(document.querySelectorAll('a[wire\\:key][href^="https://anizone.to/anime/"]')).map(a => a.href))],
         addStartButton: function () {
             const target = document.querySelector('button > span.truncate')?.parentElement || document.querySelector('.grow + div select');
             const button = Object.assign(document.createElement('button'), {
@@ -565,7 +582,7 @@ const Websites = [
                         const animeTitle = page.querySelector(this.animeTitle)?.textContent.trim();
                         const epNum = page.querySelector(this.epNumber)?.textContent.trim();
                         const epTitle = page.querySelector(this.epTitle)?.textContent.trim();
-                        const thumbnail = page.querySelector(this.thumbnail)?.src;
+                        const thumbnail = page.querySelectorAll('media-poster')[0].outerHTML.match(/src="([^"]*)"/)[1]; // using outerHTML as workaround for a weird bug
 
                         status.text = `Extracting ${epNum} - ${epTitle}...`;
                         const links = { [page.querySelector('button > span.truncate').textContent]: { stream: page.querySelector("media-player").getAttribute("src"), type: "m3u8", tracks: [...page.querySelectorAll("media-provider>track")].map(t => ({ file: t.src, kind: t.kind, label: t.label })) } };
@@ -619,12 +636,12 @@ const Websites = [
     {
         name: 'HiAnime',
         url: ['hianime.to/', 'hianimez.is/', 'hianimez.to/', 'hianime.nz/', 'hianime.bz/', 'hianime.pe/', 'hianime.cx/', 'hianime.gs/'],
-        _chunkSize: 6, // Number of episodes to extract in parallel
+        _chunkSize: 1, // Number of episodes to extract in parallel
         extractEpisodes: async function* (status) {
             for (let i = 0, epList = await applyEpisodeRangeFilter($('.ss-list > a').get()); i < epList.length; i += this._chunkSize) {
                 yield* yieldEpisodesFromPromises(epList.slice(i, i + this._chunkSize).map(async e => {
                     const [epId, epNum, epTitle] = [$(e).data('id'), $(e).data('number'), $(e).find('.ep-name').text()]; let thumbnail = '';
-                    status.text = `Extracting Episodes ${epNum-Math.min(this._chunkSize, epNum)+1} - ${epNum}...`;
+                    status.text = `Extracting Episode ${epNum-Math.min(this._chunkSize, epNum)+1}...`;
                     const servers = await $((await $.get(`/ajax/v2/episode/servers?episodeId=${epId}`, r => $(r).responseJSON)).html).find('.server-item').map((_, i) => [[$(i).text().trim(), { id: $(i).data('id'), type: $(i).data('type') }]]).get();
                     // Prefer HD-2 if available. (HD-1 and HD-3 might have CORS issues)
                     const filteredServers = servers.filter(([s]) => !['HD-1', 'HD-3'].includes(s));
@@ -674,10 +691,117 @@ const Websites = [
                     return new Episode(epNum, pg.find('.titleep a').text().trim(), links, $('a > img').get(0).src, $(div).find('.anititle').text());
                 }));
         },
+    },
+    {
+        name: "AnimeOnsen",
+        url: ['animeonsen.xyz/'],
+        extractEpisodes: async function* (status) {
+            for (let i = 0, epLinks = await applyEpisodeRangeFilter([..._$('.ao-player-metadata-episode').options].map(o=>o.value.split('-')[1])); i < epLinks.length; i += 12) {
+                yield* yieldEpisodesFromPromises(epLinks.slice(i, i + 12).map(async epNum => {
+                    status.text = `Extracting Episodes ${(epNum-Math.min(12, epNum)+1)} - ${epNum}...`;
+                    const token = atob(decodeURIComponent(document.cookie.match(new RegExp('(^|;\\s*)' + 'ao.session' + '=([^;]*)'))[2])).split("").map(c => String.fromCharCode(c.charCodeAt(0) + 1)).join("");
+                    const data = await fetch(`https://api.animeonsen.xyz/v4/content/${document.querySelector('[name="ao-content-id"]').content}/video/${epNum}`, { headers: { 'Authorization': `Bearer ${token}` } }).then(r => r.json());
+                    const links = { "AnimeOnsen": { stream: data.uri.stream, type: ".mpd", tracks: Object.entries(data.uri.subtitles).map(([label, file]) => ({ file, label, kind: 'caption' })), referer: location.origin } };
+                    return new Episode(epNum.toString().padStart(3, '0'), data.metadata.content_title, links, _$('[property="og:image"]').content, data.metadata.episode[1].contentTitle_episode_en);
+                }));
+            }
+        }
+    },
+    {
+        name: "Kaido",
+        url: ["kaido.to"],
+        extractEpisodes: async function* (status) {
+            for (let i = 0, epLinks = await applyEpisodeRangeFilter([..._$$('a.ep-item')]); i < epLinks.length; i += 12)
+                yield* yieldEpisodesFromPromises(epLinks.slice(i, i + 12).map(async epLink => {
+                    const epNum = epLink.dataset.number;
+                    status.text = `Extracting Episodes ${(epNum-Math.min(12, epNum)+1)} - ${epNum}...`;
+                    return await fetch(`/ajax/episode/servers?episodeId=${epLink.dataset.id}`).then(async r => (await r.json()).html).then(t => (new DOMParser()).parseFromString(t, 'text/html'))
+                        .then(h => [...h.querySelectorAll('[data-server-id]')].map(e => ({id: e.dataset.id, type: e.dataset.type, name: e.textContent.trim()})))
+                        .then(async servers => {
+                            const links = Object.fromEntries(await Promise.all(servers.map(async s => fetch(`/ajax/episode/sources?id=${s.id}`).then(r => r.json())
+                                .then(d => GM_fetch(d.link.replace('/e-1/', '/e-1/getSources?id=').replace('?z=', '')).then(r => r.json())
+                                .then(src => src.encrypted ? undefined : [`${s.name}-${s.type}`, { stream: src.sources[0].file, tracks: src.tracks, type: 'm3u8', referer: src.server == 4 ? 'https://megacloud.blog/' : undefined }])))));
+                            return new Episode(epNum, _$('h2.film-name > a').textContent, links, _$('.film-poster > img').src, epLink.querySelector('.ep-name').textContent)
+                        });
+                }));
+        }
+    },
+    {
+        name: "Gojo",
+        url: ["animetsu.cc"],
+        addStartButton: function (id) {
+            // Use same logic as Miruro, but target gojo layout
+            let last_known_location = location.href;
+            setInterval(() => {
+                if (last_known_location !== location.href) { last_known_location = location.href; document.getElementById('AniLINK_Overlay')?.remove() };
+                // Prepend the extract button
+                const target = document.querySelector('.Video .items-center.gap-2 + div');
+                if (target && !document.getElementById(id)) {
+                    const btn = Object.assign(document.createElement('button'), {id, className: (target.lastChild?.className || '') + " font-light w-fit !shrink-0 text-[.6rem] sm:text-xs justify-center items-center whitespace-nowrap overflow-hidden text-ellipsis flex", innerHTML: `<svg xmlns="http://www.w3.org/2000/svg" height="1em" viewBox="3 3 18 18" style="margin-right:6px;"><path fill="currentColor" d="M5 21q-.825 0-1.413-.588T3 19V5q0-.825.588-1.413T5 3h14q.825 0 1.413.588T21 5v14q0 .825-.588 1.413T19 21H5Zm0-2h14V5H5v14Zm3-4.5h2.5v-6H8v6Zm5.25 0h2.5v-6h-2.5v6Zm5.25 0h2.5v-6h-2.5v6Z"/></svg>Extract Episode Links`});
+                    btn.addEventListener('click', extractEpisodes);
+                    target.prepend(btn);
+                }
+            }, 500);
+        },
+        extractEpisodes: async function* (status) {
+            const id = location.pathname.split('/').pop();
+            for (let i = 0, epElms = await applyEpisodeRangeFilter([..._$$('.Episode button:not(:nth-child(1))')]); i < epElms.length; i += 3)
+                yield* yieldEpisodesFromPromises(epElms.slice(i, i + 3).map(async epElm => {
+                    const epNum = epElm.querySelector('.font-medium').textContent.split(' ').pop();
+                    status.text = `Extracting Episodes ${(epNum-Math.min(3, epNum)+1)} - ${epNum}...`;
+                    const servers = await fetch(`https://backend.animetsu.cc/api/anime/servers?id=${id}&num=${epNum}`).then(r => r.json());
+                    const links = Object.fromEntries((await Promise.allSettled(servers.flatMap(srv => {
+                        if (!_$('button[disabled]').textContent.includes(srv.id)) return []; // process only selected server
+                        return ['sub', ...(srv.hasDub ? ['dub'] : [])].map(async subType => 
+                            fetch(`https://backend.animetsu.cc/api/anime/tiddies?server=${srv.id}&id=${id}&num=${epNum}&subType=${subType}`).then(r => r.json())
+                                .then(data => data.sources.map(src => [`${srv.id}-${subType}-${src.quality}`, { stream: src.url, type: 'm3u8', tracks: data.subtitles?.map(s => ({ file: s.url, label: s.lang, kind: 'caption' })) || [] }]))
+                                .catch(e => { showToast(`Failed to fetch Ep ${epNum} from ${srv.id}-${subType}: ${e.message || e}`); return []; })
+                        );
+                    }))).flatMap(r => r.status === 'fulfilled' ? r.value : []));
+                    return new Episode(epNum, _$('.cover + div span').textContent, links, epElm.querySelector('img')?.src || '', epElm.querySelector('.text-sm').textContent);
+                }));
+        }
+    },
+    {
+        name: 'AnimeKai',
+        url: ['animekai.to/', 'animekai.ac/', 'animekai.cc/', 'anikai.to/'],
+        _chunkSize: 12,
+        addStartButton: function (id) {
+            setInterval(() => {
+                if ($('#' + id).get(0)) return;
+                const button = Object.assign(document.createElement('button'), { id, className: "btn btn-primary", textContent: "Extract Episode Links" });
+                const target = document.querySelector('.episode-section');
+                if (target) target.appendChild(button);
+                else document.querySelector('.eplist-nav')?.appendChild(button);
+                button.addEventListener('click', extractEpisodes);
+            }, 500);
+        },
+        extractEpisodes: async function* (status) {
+            status.text = 'Fetching episode list...';
+            // const epItems = await applyEpisodeRangeFilter($('a[num]').get().map(e=> ({id: e.getAttribute('token'), num: e.getAttribute('num'), type: e.getAttribute('langs'), name: e.querySelector('span').textContent})));
+            const epElms = await applyEpisodeRangeFilter($('a[num]').get());
+            for (let i = 0; i < epElms.length; i += this._chunkSize) 
+                yield* yieldEpisodesFromPromises(epElms.slice(i, i + this._chunkSize).map(async ep => {
+                    const epNum = ep.getAttribute('num');
+                    status.text = `Extracting Episodes ${(epNum-Math.min(this._chunkSize, epNum)+1)} - ${epNum}...`;
+                    const servers = await fetch(`/ajax/links/list?token=${ep.getAttribute('token')}&_=${await this._decode(ep.getAttribute('token'))}`).then(r => r.json().then(d => d.result)).then(t => (new DOMParser()).parseFromString(t, 'text/html'))
+                        .then(doc => $(doc).find('.server').map((i, e) => ({ lid: e.dataset.lid, name: `${this._typeSuffix(e.closest('div').dataset.id)} - ${e.textContent}` })).get())
+                        .catch(e => showToast(`Failed to fetch servers for Ep ${epNum}`));
+                    const links = {};
+                    await Promise.all(servers.map(async s => {
+                        links[s.name] = await fetch(`/ajax/links/view?id=${s.lid}&_=${await this._decode(s.lid)}`).then(r => r.json().then(d => d.result))
+                            .then(val => this._decode(val, 'd').then(JSON.parse)).then(async d => await Extractors.use(d.url))
+                            .catch(e => showToast(`Failed to fetch Ep ${epNum} from ${s.name}: ${e.message || e}`))
+                    }));
+                    return new Episode(epNum, $('h1').text(), links, $('.poster-wrap-bg').attr('style').match(/https.*\.[a-z]+/g)[0], ep.querySelector('span').textContent);
+                }))
+        },
+        _decode: async (s, t = 'e') => await GM_fetch(`https://c-kai-8090.amarullz.com/?f=${t}&d=${s}`).then(r => r.text()),
+        _typeSuffix: type => ({ sub: "Hard Sub", softsub: "Soft Sub", dub: "Dub & S-Sub" }[type] || type)
     }
 ];
 
-const USER_AGENT_HEADER = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+const USER_AGENT_HEADER = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0";
 const Extractors = {
     use: function (url, ...args) {
         const extractor = this[(new URL(url)).host];
@@ -696,64 +820,29 @@ const Extractors = {
         return { file: src.sources?.file, type: 'm3u8', tracks: src.tracks || []}
     },
     'megacloud.blog': async function (embed, referer) {
-        // adapted from https://github.com/middlegear/hakai-extensions/blob/main/src/utils/getClientKey.ts
-        _getClientKey = async (embed, referer) => {
-            const salts = [];
-            for (let attempt = 0; attempt < 100; attempt++) {
-                const html = await GM_fetch(embed, { headers: { referer, 'User-Agent': USER_AGENT_HEADER } }).then(r => r.text());
-                const match1 = html.match(/\b[a-zA-Z0-9]{48}\b/), match2 = html.match(/\b([a-zA-Z0-9]{16})\b.*?\b([a-zA-Z0-9]{16})\b.*?\b([a-zA-Z0-9]{16})\b/);
-                if (match1) salts.push(match1[0]);
-                if (match2 && match2.length === 4) salts.push([match2[1], match2[2], match2[3]].join(""));
-                const page = (new DOMParser()).parseFromString(html, 'text/html');
-                for (const script of page.scripts) {
-                    const content = script.getHTML(); if (!content) continue;
-                    const varMatch = content.match(/_[a-zA-Z0-9_]+\s*=\s*['"]([a-zA-Z0-9]{32,})['"]/);
-                    if (varMatch?.[1]) salts.push(varMatch[1]);
-                    const objMatch = content.match(/_[a-zA-Z0-9_]+\s*=\s*{[^}]*x\s*:\s*['"]([a-zA-Z0-9]{16,})['"][^}]*y\s*:\s*['"]([a-zA-Z0-9]{16,})['"][^}]*z\s*:\s*['"]([a-zA-Z0-9]{16,})['"]/);
-                    if (objMatch?.[1] && objMatch[2] && objMatch[3]) { const key = objMatch[1] + objMatch[2] + objMatch[3]; salts.push(key); }
-                }
-                const nonceAttr =  page.querySelector("script[nonce]")?.getAttribute("nonce");
-                if (nonceAttr && nonceAttr.length >= 32) salts.push(nonceAttr);
-                const metaContent = Array.from(page.querySelectorAll("meta[name]")).filter((el) => el.getAttribute("name")?.startsWith("_")).map((el) => el.getAttribute("content")).join("");
-                if (metaContent && /[a-zA-Z0-9]{32,}/.test(metaContent)) salts.push(metaContent);
-                const dataAttr = Object.fromEntries(Array.from(page.querySelectorAll('[data-dpi],[data-key],[data-token]'))[0]?.attributes ?? []);
-                const dataKey = dataAttr?.["data-dpi"] || dataAttr?.["data-key"] || dataAttr?.["data-token"];
-                if (dataKey && /[a-zA-Z0-9]{32,}/.test(dataKey)) salts.push(dataKey);
-                const uniqueSalts = [...new Set(salts)].filter((key) => key.length >= 32 && key.length <= 64);
-                if (uniqueSalts.length > 0) return uniqueSalts[0];
-            }
-        };
-        // adapted from https://github.com/middlegear/hakai-extensions/blob/main/src/source-extractors/megacloud.ts
-        _decrypt = (secret, nonce, encrypted, rounds = 3) => {
-            const _DEFAULT_CHARSET = Array.from({ length: 95 }, (_, i) => String.fromCharCode(i + 32));
-            const _deriveKey = (secret, nonce) => { const input = secret + nonce; let hash = 0n; for (let i = 0; i < input.length; i++) hash += hash * 173n + BigInt(input.charCodeAt(i)); const modHash = hash % 0x7fffffffffffffffn; const xorProcessed = [...input].map((char) => String.fromCharCode(char.charCodeAt(0) ^ 15835827 & 255)).join(""); const shift = Number(modHash) % xorProcessed.length + 7; const rotated = xorProcessed.slice(shift) + xorProcessed.slice(0, shift); const reversedNonce = [...nonce].reverse().join(""); let interleaved = ""; for (let i = 0; i < Math.max(rotated.length, reversedNonce.length); i++) interleaved += (rotated[i] || "") + (reversedNonce[i] || ""); return [...interleaved.substring(0, (96 + Number(modHash) % 33))].map((ch) => String.fromCharCode(ch.charCodeAt(0) % 95 + 32)).join(""); }
-            const _columnarTranspositionCipher = (text, key) => { const cols = key.length; const rows = Math.ceil(text.length / cols); const grid = Array.from({ length: rows }, () => Array(cols).fill("")); let i = 0; for (const { idx } of [...key].map((char, idx) => ({ char, idx })).sort((a, b) => a.char.charCodeAt(0) - b.char.charCodeAt(0))) for (let row = 0; row < rows; row++) grid[row][idx] = text[i++] || ""; return grid.flat().join(""); }
-            const _deterministicUnshuffle = (charset, key) => { let seed = [...key].reduce((acc, char) => acc * 31n + BigInt(char.charCodeAt(0)) & 0xffffffffn, 0n); const result = [...charset]; for (let i = result.length - 1; i > 0; i--) { const j = ((limit) => { seed = seed * 1103515245n + 12345n & 0x7fffffffn; return Number(seed % BigInt(limit)); })(i + 1);[result[i], result[j]] = [result[j], result[i]]; } return result; }
-            let data = new TextDecoder("utf-8").decode(Uint8Array.from(atob(encrypted), c => c.charCodeAt(0)));
-            for (let round = rounds; round >= 1; round--) {
-                const passphrase = _deriveKey(secret, nonce) + round;
-                let seed = [...passphrase].reduce((acc, char) => acc * 31n + BigInt(char.charCodeAt(0)) & 0xffffffffn, 0n);
-                data = [...data].map((char) => { const idx = _DEFAULT_CHARSET.indexOf(char); if (idx === -1) return char; return _DEFAULT_CHARSET[(idx - (() => { seed = seed * 1103515245n + 12345n & 0x7fffffffn; return Number(seed % BigInt(95)); })() + 95) % 95]; }).join("");
-                data = _columnarTranspositionCipher(data, passphrase);
-                const shuffled = _deterministicUnshuffle(_DEFAULT_CHARSET, passphrase);
-                data = [...data].map(char => (Object.fromEntries(shuffled.map((c, i) => [c, _DEFAULT_CHARSET[i]])))[char] || char).join("");
-            }
-            let length = parseInt(data.slice(0, 4), 10);
-            if (isNaN(length) || length <= 0 || length > data.length - 4) throw new Error("Decryption failed: Invalid length in decrypted string");
-            return data.slice(4, 4 + length);
+        // adapted from https://github.com/yuzono/aniyomi-extensions/blob/master/lib/megacloud-extractor/src/main/java/eu/kanade/tachiyomi/lib/megacloudextractor/MegaCloudExtractor.kt
+        const res = await GM_fetch(embed, { headers: { referer, 'User-Agent': USER_AGENT_HEADER } });
+        const retryAfter = res.headers.get('Retry-After');  // Rate limit Policy: 10 requests per minute
+        if (retryAfter) {
+            const hhmmss = new Date(new Date().getTime() + parseInt(retryAfter) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+            showToast(`Rate limited by megacloud.blog, retrying in ${retryAfter} seconds (at ${hhmmss})...`, parseInt(retryAfter) * 1000);
+            return await new Promise(res => setTimeout(res, 500 + parseInt(retryAfter) * 1000)).then(() => Extractors['megacloud.blog'](embed, referer)); // recursive retry
         }
-        const sId = embed.split('/').pop().split('?')[0];
-        const key = await _getClientKey(embed, referer);
-        const url = `https://megacloud.blog/embed-2/v3/e-1/getSources?id=${sId}&_k=${key}`;
-        const data = await GM_fetch(url).then(r=>r.json());
-        if (data.encrypted) {
-            const secret = await fetch('https://raw.githubusercontent.com/yogesh-hacker/MegacloudKeys/refs/heads/main/keys.json').then(r => r.json()).then(j => j['mega']);
-            const sources = JSON.parse(_decrypt(secret, key, data.sources));
-            return { file: sources[0].file, type: sources[0].type, tracks: data.tracks || [] }
-        }
-        if (data.error) throw new Error(data.error);
-        showToast(`Couldnt decrypt sources for ${embed}`);
-        return { file: embed, type: 'embed', tracks: data?.tracks }
+        const html = await res.text();
+        const match1 = html.match(/\b[a-zA-Z0-9]{48}\b/), match2 = html.match(/\b([a-zA-Z0-9]{16})\b.*?\b([a-zA-Z0-9]{16})\b.*?\b([a-zA-Z0-9]{16})\b/);
+        const nonce = match1?.[0] || (match2 ? match2[1] + match2[2] + match2[3] : null);
+        if (!nonce) throw new Error('Failed to extract nonce from response');
+        const sId = embed.split('/e-1/')[1]?.split('?')[0];
+        const host = (new URL(embed)).host;
+        const url = `https://${host}/embed-2/v3/e-1/getSources?id=${sId}&_k=${nonce}`;
+        const data = await GM_fetch(url, { headers: { 'Accept': '*/*', 'X-Requested-With': 'XMLHttpRequest', 'Referer': `https://${host}/` } }).then(r => r.json());
+        if (!data.encrypted || data.sources[0].file.includes('.m3u8')) return { file: data.sources[0].file, type: data.sources[0].type, tracks: data.tracks || [] };
+        const secret = await fetch('https://raw.githubusercontent.com/yogesh-hacker/MegacloudKeys/refs/heads/main/keys.json').then(r => r.json()).then(j => j['mega']);
+        const decryptUrl = `https://megacloud-api-nine.vercel.app/?encrypted_data=${encodeURIComponent(data.sources[0].file)}&nonce=${encodeURIComponent(nonce)}&secret=${encodeURIComponent(secret)}`;
+        const decrypted = await GM_fetch(decryptUrl).then(r => r.text());
+        const m3u8 = decrypted.match(/"file":"(.*?)"/)?.[1];
+        if (!m3u8) throw new Error('Video URL not found in decrypted response');
+        return { file: m3u8, type: 'hls', tracks: data.tracks || [] };
     },
     'gofile.io': async function (url) {
         const id = url.split('/').pop();
@@ -783,6 +872,12 @@ const Extractors = {
         const sources = eval(decoded.match(/sources:\[.*?\]/)[0]);
         const source = sources.reduce((best, curr) => (s => parseInt(s.label) || 0)(curr) > (s => parseInt(s.label) || 0)(best) ? curr : best, sources[0]);
         return { file: source.file, type: source.file.includes('.m3u8') ? 'm3u8' : 'mp4', tracks: [] };
+    },
+    'megaup.live': async function(url, referer='https://megaup.live/') {
+        // workaround: use GM_xmlhttpRequest to avoid passing cookies (coudnt do that with GM_fetch)
+        const encToken = await new Promise((r, j) => GM_xmlhttpRequest({ method: 'GET', url: url.replace('/e/', '/media/'), headers: { 'User-Agent': USER_AGENT_HEADER }, anonymous: true, onload: res => { try { r(JSON.parse(res.responseText).result); } catch (e) { j(e); } }, onerror: j }));
+        const src = (await GM_fetch('https://enc-dec.app/api/dec-mega', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({text: encToken, agent: USER_AGENT_HEADER}) }).then(r => r.json())).result; 
+        return { stream: src.sources[0].file, type: 'm3u8', tracks: src.tracks?.map(t => ({ file: t.file, label: t.label, kind: t.kind, default: !!t.default })), referer: 'https://megaup.cc/' }; 
     }
 }
 /**
@@ -934,7 +1029,7 @@ async function extractEpisodes() {
         @import url('https://fonts.googleapis.com/icon?family=Material+Icons');
 
         #AniLINK_Overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.8); z-index: 1000; display: flex; align-items: center; justify-content: center; }
-        #AniLINK_LinksContainer { width: 80%; max-height: 85%; background-color: #222; color: #eee; padding: 20px; border-radius: 8px; overflow-y: auto; display: flex; flex-direction: column;} /* Flex container for status and qualities */
+        #AniLINK_LinksContainer { width: 80%; max-height: 85%; background-color: #222; color: #eee; padding: 20px; border-radius: 8px; overflow-y: auto; display: flex; flex-direction: column;}
         .anlink-status-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; } /* Header for status bar and stop button */
         .anlink-status-bar { color: #eee; flex-grow: 1; margin-right: 10px; display: block; } /* Status bar takes space */
         .anlink-status-icon { background: transparent; border: none; color: #eee; cursor: pointer; padding-right: 10px; } /* status icon style */
@@ -944,24 +1039,36 @@ async function extractEpisodes() {
         .anlink-status-icon i.retry::before { content: 'refresh'; } /* Retry icon */
         .anlink-status-icon i.error::before { content: 'error'; } /* Error icon */
         .anlink-status-icon:hover i.extracting::before { content: 'stop_circle'; animation: stop; } /* Show stop icon on hover when extracting */
-        .anlink-quality-section { margin-top: 20px; margin-bottom: 10px; border-bottom: 1px solid #444; padding-bottom: 5px; }
-        .anlink-quality-header { display: flex; justify-content: space-between; align-items: center; cursor: pointer; } /* Added cursor pointer */
-        .anlink-quality-header > span { color: #26a69a; font-size: 1.5em;  display: flex; align-items: center; flex-grow: 1; } /* Flex and align items for icon and text */
-        .anlink-quality-header i { margin-right: 8px; transition: transform 0.3s ease-in-out; } /* Transition for icon rotation */
-        .anlink-quality-header i.rotate { transform: rotate(90deg); } /* Rotate class */
-        .anlink-episode-list { list-style: none; padding-left: 0; margin-top: 0; overflow: hidden; transition: max-height 0.5s ease-in-out; } /* Transition for max-height */
-        .anlink-episode-item { margin-bottom: 5px; padding: 8px; border-bottom: 1px solid #333; display: flex; align-items: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } /* Single line and ellipsis for item */
-        .anlink-episode-item:last-child { border-bottom: none; }
-        .anlink-episode-item > label > span { user-select: none; cursor: pointer; color: #26a69a; } /* Disable selecting the 'Ep: 1' prefix */
-        .anlink-episode-item > label > span > img { display: inline; } /* Ensure the mpv icon is in the same line */
-        .anlink-episode-checkbox { appearance: none; width: 20px; height: 20px; margin-right: 10px; margin-bottom: -5px; border: 1px solid #26a69a; border-radius: 4px; outline: none; cursor: pointer; transition: background-color 0.3s, border-color 0.3s; }
-        .anlink-episode-checkbox:checked { background-color: #26a69a; border-color: #26a69a; }
-        .anlink-episode-checkbox:checked::after { content: '✔'; display: block; color: white; font-size: 14px; text-align: center; line-height: 20px; animation: checkTilt 0.3s; }
-        .anlink-episode-link { color: #ffca28; text-decoration: none; word-break: break-all; overflow: hidden; text-overflow: ellipsis; display: inline; } /* Single line & Ellipsis for long links */
-        .anlink-episode-link:hover { color: #fff; }
         .anlink-header-buttons { display: flex; gap: 10px; }
         .anlink-header-buttons button { background-color: #26a69a; color: white; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; }
         .anlink-header-buttons button:hover { background-color: #2bbbad; }
+        .anlink-quality-section { margin-top: 20px; margin-bottom: 10px; border-bottom: 1px solid #444; padding-bottom: 5px; }
+        .anlink-quality-header { display: flex; justify-content: space-between; align-items: center; }
+        .anlink-quality-header > span { color: #26a69a; font-size: 1.5em; display: flex; align-items: center; flex-grow: 1; } /* Flex and align items for icon and text */
+        .anlink-quality-count { cursor: pointer; margin-right: 8px; opacity: 0.7; transition: opacity 0.2s; }
+        .anlink-quality-count:hover { opacity: 1; }
+        .anlink-quality-name { cursor: pointer; flex-grow: 1; }
+        .anlink-quality-header i { margin-right: 8px; transition: transform 0.3s ease-in-out; }
+        .anlink-quality-header i.rotate { transform: rotate(90deg); } /* Rotate class */
+        .anlink-episode-list { list-style: none; padding-left: 0; margin-top: 0; overflow: hidden; transition: max-height 0.5s ease-in-out; } /* Transition for max-height */
+        .anlink-episode-item { margin-bottom: 5px; padding: 8px; border-bottom: 1px solid #333; display: flex; flex-direction: column; }
+        .anlink-episode-item:last-child { border-bottom: none; }
+        .anlink-episode-main { display: flex; align-items: center; } 
+        .anlink-episode-main > label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } /* Single line & Ellipsis for long links */
+        .anlink-episode-main > label > span { user-select: none; cursor: pointer; color: #26a69a; } /* Disable selecting the 'Ep: 1' prefix */
+        .anlink-episode-main > label > span > img { vertical-align: middle; display: inline; }  /* Ensure the mpv icon is in the same line */
+        .anlink-episode-checkbox { appearance: none; width: 20px; height: 20px; margin-right: 10px; margin-bottom: -5px; border: 1px solid #26a69a; border-radius: 4px; outline: none; cursor: pointer; transition: background-color 0.3s, border-color 0.3s; }
+        .anlink-episode-checkbox:checked { background-color: #26a69a; border-color: #26a69a; }
+        .anlink-episode-checkbox:checked::after { content: '✔'; display: block; color: white; font-size: 14px; text-align: center; line-height: 20px; animation: checkTilt 0.3s; }
+        .anlink-episode-link { color: #ffca28; text-decoration: none; display: inline; }
+        .anlink-episode-link:hover { color: #fff; }
+        .anlink-subs-toggle { font-size: 0.85em; color: #888; cursor: pointer; margin-left: 10px; user-select: none; transition: color 0.2s; white-space: nowrap; }
+        .anlink-subs-toggle:hover { color: #26a69a; }
+        .anlink-subs-list { margin-left: 30px; margin-top: 5px; font-size: 0.9em; color: #bbb; max-height: 0; overflow: hidden; transition: max-height 0.3s ease-in-out; }
+        .anlink-subs-list.expanded { max-height: 300px; }
+        .anlink-sub-item { padding: 2px 0; width: max-content; user-select: none; }
+        .anlink-sub-item a { color: #64b5f6; text-overflow: ellipsis; overflow: hidden; display: inline; user-select: text; }
+        .anlink-sub-item a:hover { color: #90caf9; text-decoration: underline; }
 
         @keyframes spinning { from { transform: rotate(0deg); } to { transform: rotate(360deg); } } /* Spinning animation */
         @keyframes checkTilt { from { transform: rotate(-20deg); } to { transform: rotate(0deg); } } /* Checkmark tilt animation */
@@ -1004,6 +1111,15 @@ async function extractEpisodes() {
     statusBar.textContent = status.text;
     statusBarHeader.appendChild(statusBar);
 
+    // Create header buttons (Export & Play)
+    const headerButtons = document.createElement('div');
+    headerButtons.className = 'anlink-header-buttons';
+    headerButtons.innerHTML = `
+        <button type="button" class="anlink-export-all">Export</button>
+        <button type="button" class="anlink-play-all">Play with MPV</button>
+    `;
+    statusBarHeader.appendChild(headerButtons);
+
     // start interval to update status text
     const statusInterval = setInterval(() => {
         if (JSON.stringify(status) !== JSON.stringify(_lastStatus)) {
@@ -1033,18 +1149,31 @@ async function extractEpisodes() {
     qualitiesContainer.id = "AniLINK_QualitiesContainer";
     linksContainer.appendChild(qualitiesContainer);
 
+    // Update counts on checkbox change (event delegation)
+    qualitiesContainer.addEventListener('change', e => {
+        if (e.target.classList.contains('anlink-episode-checkbox')) {
+            const section = e.target.closest('.anlink-quality-section');
+            const total = section.querySelectorAll('.anlink-episode-checkbox').length;
+            const checked = section.querySelectorAll('.anlink-episode-checkbox:checked').length;
+            section.querySelector('.anlink-quality-count').textContent = checked ? `(${checked}/${total})` : `(${total})`;
+        }
+    });
+
 
     // --- Process Episodes using Generator ---
+    window._anilink_episodes = [];
     try {
         const episodeGenerator = site.extractEpisodes(status);
-        const qualityLinkLists = {}; // Stores lists of links for each quality
+        const qualityLinkLists = {};
+        const startTime = Date.now();
 
         for await (const episode of episodeGenerator) {
             if (!status.isExtracting) { // Check if extraction is stopped
                 statusIconElement.querySelector('i').classList.remove('extracting'); // Stop spinner animation
                 return; // Exit if extraction is stopped
             }
-            if (!episode) continue; // Skip if episode is null (error during extraction)
+            if (!episode) continue;
+            window._anilink_episodes.push(episode);
 
             // Get all links into format - {[qual1]:[ep1,2,3,4], [qual2]:[ep1,2,3,4], ...}
             for (const quality in episode.links) {
@@ -1055,15 +1184,17 @@ async function extractEpisodes() {
             // Update UI in real-time - RENDER UI HERE BASED ON qualityLinkLists
             renderQualityLinkLists(qualityLinkLists, qualitiesContainer);
         }
+        
+        const duration = ((Date.now() - startTime) / 1000).toFixed(2);
         statusIconElement.querySelector('i').classList.remove('extracting');
         if (qualityLinkLists && Object.keys(qualityLinkLists).length > 0) {
-            status = { isExtracting: false, text: "Extraction Complete!" };
+            status = { isExtracting: false, text: `Extraction Complete in ${duration} seconds` };
         } else {
             status = { isExtracting: false, text: "No episodes found." };
         }
     } catch (error) {
         console.error('Error during episode extraction:', error);
-        status = { isExtracting: false, text: "Extraction Failed.", error: error.message || error.toString() };
+        status = { isExtracting: false, text: `Extraction Failed after ${duration} seconds.`, error: error.message || error.toString() };
     }
 
     // Renders quality link lists inside a given container element
@@ -1088,26 +1219,34 @@ async function extractEpisodes() {
                 qualitySection.className = 'anlink-quality-section';
                 qualitySection.dataset.quality = quality;
 
-                const headerDiv = document.createElement('div'); // Header div for quality-string and buttons - ROW
+                const headerDiv = document.createElement('div');
                 headerDiv.className = 'anlink-quality-header';
+                headerDiv.title = 'Shift+Click to select/deselect all episodes in this quality';
 
-                // Create a span for the clickable header text and icon
                 const qualitySpan = document.createElement('span');
-                qualitySpan.innerHTML = `<i style="opacity: 0.5">(${sortedLinks[quality].length})</i> <i class="material-icons">chevron_right</i> ${quality}`;
-                qualitySpan.addEventListener('click', toggleQualitySection);
+                const count = document.createElement('i');
+                count.className = 'anlink-quality-count';
+                count.textContent = `(${sortedLinks[quality].length})`;
+                count.title = 'Click to select/deselect all';
+                count.dataset.total = sortedLinks[quality].length;
+                count.addEventListener('click', e => {
+                    e.stopPropagation();
+                    toggleSelectAll(qualitySection);
+                });
+                
+                const icon = document.createElement('i');
+                icon.className = 'material-icons';
+                icon.textContent = 'chevron_right';
+                
+                const name = document.createElement('span');
+                name.className = 'anlink-quality-name';
+                name.textContent = quality;
+                name.addEventListener('click', toggleQualitySection);
+                
+                qualitySpan.appendChild(count);
+                qualitySpan.appendChild(icon);
+                qualitySpan.appendChild(name);
                 headerDiv.appendChild(qualitySpan);
-
-
-                // --- Create Speed Dial Button in the Quality Section ---
-                const headerButtons = document.createElement('div');
-                headerButtons.className = 'anlink-header-buttons';
-                headerButtons.innerHTML = `
-                    <button type="button" class="anlink-select-links">Select</button>
-                    <button type="button" class="anlink-copy-links">Copy</button>
-                    <button type="button" class="anlink-export-links">Export</button>
-                    <button type="button" class="anlink-play-links">Play with MPV</button>
-                `;
-                headerDiv.appendChild(headerButtons);
                 qualitySection.appendChild(headerDiv);
 
                 // --- Add Empty episodes list elm to the quality section ---
@@ -1118,13 +1257,15 @@ async function extractEpisodes() {
 
                 container.appendChild(qualitySection);
 
-                // Attach handlers
-                attachBtnClickListeners(episodes, qualitySection);
+                // Shift+Click to select all episodes in this quality
+                headerDiv.addEventListener('mousedown', e => e.shiftKey && _$$('.anlink-episode-checkbox').forEach(cb => cb.checked = !cb.checked));
             } else {
                 // Update header count
-                const qualitySpan = qualitySection.querySelector('.anlink-quality-header > span');
-                if (qualitySpan) {
-                    qualitySpan.innerHTML = `<i style="opacity: 0.5">(${sortedLinks[quality].length})</i> <i class="material-icons">chevron_right</i> ${quality}`;
+                const countElem = qualitySection.querySelector('.anlink-quality-count');
+                if (countElem) {
+                    const checked = qualitySection.querySelectorAll('.anlink-episode-checkbox:checked').length;
+                    countElem.textContent = checked ? `(${checked}/${sortedLinks[quality].length})` : `(${sortedLinks[quality].length})`;
+                    countElem.dataset.total = sortedLinks[quality].length;
                 }
                 episodeListElem = qualitySection.querySelector('.anlink-episode-list');
             }
@@ -1134,22 +1275,27 @@ async function extractEpisodes() {
             episodes.forEach(ep => {
                 const listItem = document.createElement('li');
                 listItem.className = 'anlink-episode-item';
+                const hasSubs = ep.links[quality].tracks?.some(t => /^(caption|subtitle)s?/.test(t.kind));
                 listItem.innerHTML = `
-                    <label>
-                        <input type="checkbox" class="anlink-episode-checkbox" />
-                        <span id="mpv-epnum" title="Play in MPV">Ep ${ep.number.replace(/^0+/, '')}: </span>
-                        <a href="${ep.links[quality].stream}" class="anlink-episode-link" download="${encodeURI(ep.filename)}" data-epnum="${ep.number}" data-ep=${encodeURI(JSON.stringify({ ...ep, links: undefined }))} >${ep.links[quality].stream}</a>
-                    </label>
+                    <div class="anlink-episode-main">
+                        <label>
+                            <input type="checkbox" class="anlink-episode-checkbox" />
+                            <span class="mpv-epnum" title="Play in MPV">Ep ${ep.number.replace(/^0+/, '')}: </span>
+                            <a href="${ep.links[quality].stream}" class="anlink-episode-link" download="${encodeURI(ep.filename)}" data-epnum="${ep.number}" data-ep=${encodeURI(JSON.stringify({ ...ep, links: undefined }))} >${ep.links[quality].stream}</a>
+                        </label>
+                        ${hasSubs ? '<span class="anlink-subs-toggle" title="Shift+Click to toggle all episodes\' subtitles">🄰 Subs ▼</span>' : ''}
+                    </div>
+                    ${hasSubs ? '<div class="anlink-subs-list"></div>' : ''}
                 `;
                 const episodeLinkElement = listItem.querySelector('.anlink-episode-link');
-                const epnumSpan = listItem.querySelector('#mpv-epnum');
+                const epnumSpan = listItem.querySelector('.mpv-epnum');
                 const link = episodeLinkElement.href;
                 const name = decodeURIComponent(episodeLinkElement.download);
 
                 // On hover, show MPV icon & file name
                 listItem.addEventListener('mouseenter', () => {
                     window.getSelection().isCollapsed && (episodeLinkElement.textContent = name);
-                    epnumSpan.innerHTML = `<img width="20" height="20" fill="#26a69a" style="vertical-align:middle;" src="https://a.fsdn.com/allura/p/mpv-player-windows/icon?1517058933"> ${ep.number.replace(/^0+/, '')}: `;
+                    epnumSpan.innerHTML = `<img width="20" height="20" fill="#26a69a" src="https://a.fsdn.com/allura/p/mpv-player-windows/icon?1517058933"> ${ep.number.replace(/^0+/, '')}: `;
                 });
                 listItem.addEventListener('mouseleave', () => {
                     episodeLinkElement.textContent = decodeURIComponent(link);
@@ -1157,11 +1303,43 @@ async function extractEpisodes() {
                 });
                 epnumSpan.addEventListener('click', e => {
                     e.preventDefault();
-                    location.replace('mpv://play/' + safeBtoa(link) + `/?v_title=${safeBtoa(name)}&cookies=${location.hostname}.txt` + (ep.links[quality].tracks?.some(t => t.kind === 'caption') ? `&subfile=${safeBtoa(ep.links[quality].tracks.filter(t => t.kind === 'caption').map(t => t.file).join(';'))}` : ''));
-                    showToast('Sent to MPV. If nothing happened, install <a href="https://github.com/akiirui/mpv-handler" target="_blank" style="color:#1976d2;">mpv-handler</a>.');
+                    location.replace('mpv-handler://play/' + safeBtoa(link) + `/?v_title=${safeBtoa(name)}&cookies=${location.hostname}.txt` + (ep.links[quality].tracks?.some(t => t.kind === 'caption') ? `&subfile=${safeBtoa(ep.links[quality].tracks.filter(t => /^caption/.test(t.kind)).map(t => t.file).join(';'))}` : ''));
+                    showToast('Sent to MPV. If nothing happened, install v0.4.0+ of <a href="https://github.com/akiirui/mpv-handler" target="_blank" style="color:#1976d2;">mpv-handler</a>.');
+                });
+                episodeLinkElement.addEventListener('click', () => {
+                    fetch(episodeLinkElement.href)
+                        .then(r => r.blob())
+                        .then(b => Object.assign(document.createElement('a'), { href: URL.createObjectURL(b), download: decodeURIComponent(episodeLinkElement.download) }).click());    // workaround to force download with correct filename (some browsers ignore download attr for cross-origin links)
                 });
 
+                // Subtitle toggle functionality
+                const subsToggle = listItem.querySelector('.anlink-subs-toggle');
+                const subsList = listItem.querySelector('.anlink-subs-list');
+                if (subsToggle && subsList) {
+                    subsToggle.addEventListener('mousedown', e => {
+                        // shift+click to toggle all episode subtitles
+                        if (e.shiftKey) {
+                            return document.querySelectorAll('.anlink-subs-list').forEach(sl => sl.previousElementSibling.querySelector('.anlink-subs-toggle').dispatchEvent(new MouseEvent('mousedown', { bubbles: false })));
+                        }
+                        const isExpanded = subsList.classList.toggle('expanded');
+                        subsToggle.textContent = isExpanded ? '🄰 Subs ▲' : '🄰 Subs ▼';
+                        if (isExpanded && !subsList.hasChildNodes()) {
+                            ep.links[quality].tracks.filter(t => /^caption/.test(t.kind)).forEach(track => {
+                                const subItem = document.createElement('div');
+                                subItem.className = 'anlink-sub-item';
+                                subItem.innerHTML = `└─ ${track.label || 'Subtitle'}: <a href="${track.file}" target="_blank">${track.file}</a>`;
+                                subsList.appendChild(subItem);
+                            });
+                        }
+                        const epList = subsList.closest('.anlink-episode-list');
+                        epList.style.maxHeight = +epList.style.maxHeight.replace('px','') + subsList.scrollHeight + 'px'; // Adjust max-height to fit new content
+                    });
+                }
+
                 episodeListElem.appendChild(listItem);
+
+                // Fix checkbox state double toggling due to label click
+                (listItem.querySelector('.anlink-episode-checkbox')).onclick = e => e.stopPropagation();
             });
 
             // Restore expand state only if section was previously expanded
@@ -1174,16 +1352,14 @@ async function extractEpisodes() {
     }
 
     function toggleQualitySection(event) {
-        // Target the closest anlink-quality-header span to ensure only clicks on the text/icon trigger toggle
-        const qualitySpan = event.currentTarget;
-        const headerDiv = qualitySpan.parentElement;
-        const qualitySection = headerDiv.closest('.anlink-quality-section');
+        const qualityName = event.currentTarget;
+        const qualitySection = qualityName.closest('.anlink-quality-section');
         const episodeList = qualitySection.querySelector('.anlink-episode-list');
-        const icon = qualitySpan.querySelector('.material-icons'); // Query icon within the span
+        const icon = qualitySection.querySelector('.material-icons');
         const isCollapsed = episodeList.style.maxHeight === '0px';
 
         if (isCollapsed) {
-            episodeList.style.maxHeight = `${episodeList.scrollHeight}px`; // Expand to content height
+            episodeList.style.maxHeight = `${episodeList.scrollHeight}px`; // Expand to content height with animation
             icon.classList.add('rotate'); // Rotate icon on expand
         } else {
             episodeList.style.maxHeight = '0px'; // Collapse
@@ -1191,129 +1367,117 @@ async function extractEpisodes() {
         }
     }
 
-    // Attach click listeners to the speed dial buttons for each quality section
-    function attachBtnClickListeners(episodeList, qualitySection) {
-        const buttonActions = [
-            { selector: '.anlink-select-links', handler: onSelectBtnPressed },
-            { selector: '.anlink-copy-links', handler: onCopyBtnClicked },
-            { selector: '.anlink-export-links', handler: onExportBtnClicked },
-            { selector: '.anlink-play-links', handler: onPlayBtnClicked }
-        ];
+    function toggleSelectAll(qualitySection) {
+        const checkboxes = Array.from(qualitySection.querySelectorAll('.anlink-episode-checkbox'));
+        const allChecked = checkboxes.every(cb => cb.checked);
+        checkboxes.forEach(cb => cb.checked = !allChecked);
+        // also select all the text
+        if (!allChecked) {
+            const range = document.createRange();
+            range.selectNodeContents(qualitySection.querySelector('ul'));
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+        }
+    }
 
-        buttonActions.forEach(({ selector, handler }) => {
-            const button = qualitySection.querySelector(selector);
-            button.addEventListener('click', () => handler(button, episodeList, qualitySection));
+    // Attach header button handlers
+    (function attachHeaderButtons() {
+        const exportBtn = linksContainer.querySelector('.anlink-export-all');
+        const playBtn = linksContainer.querySelector('.anlink-play-all');
+
+        exportBtn.addEventListener('click', () => onExportAll(exportBtn));
+        playBtn.addEventListener('click', () => onPlayAll(playBtn));
+    })();
+
+    // Helper to get all selected episodes across all qualities
+    function getAllSelectedEpisodes() {
+        const selected = {};
+        document.querySelectorAll('.anlink-quality-section').forEach(section => {
+            const quality = section.dataset.quality;
+            const items = Array.from(section.querySelectorAll('.anlink-episode-item input:checked'))
+                .map(cb => cb.closest('.anlink-episode-item'));
+            if (items.length) selected[quality] = items;
         });
+        return selected;
+    }
 
-        // Helper function to get checked episode items within a quality section
-        function _getSelectedEpisodeItems(qualitySection) {
-            return Array.from(qualitySection.querySelectorAll('.anlink-episode-item input[type="checkbox"]:checked'))
-                .map(checkbox => checkbox.closest('.anlink-episode-item'));
-        }
-
-        // Helper function to prepare m3u8 playlist string from given episodes
-        function _preparePlaylist(episodes, quality) {
-            let playlistContent = '#EXTM3U\n';
-            playlistContent += `#EXTVLCOPT:http-referrer=${Object.values(episodes[0]?.links)[0]?.referer}\n`;
-            episodes.forEach(episode => {
-                const linkObj = episode.links[quality];
-                if (!linkObj) {
-                    showToast(`No link found for source ${quality} in episode ${episode.number}`);
-                    return;
-                }
-                // Add tracks if present (subtitles, audio, etc.)
-                if (linkObj.tracks && Array.isArray(linkObj.tracks) && linkObj.tracks.length > 0) {
-                    linkObj.tracks.forEach(track => {
-                        // EXT-X-MEDIA for subtitles or alternate audio
-                        if (track.kind && track.kind.startsWith('audio')) {
-                            playlistContent += `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio${episode.number}\",NAME=\"${track.label || 'Audio'}\",DEFAULT=${track.default ? 'YES' : 'NO'},URI=\"${track.file}\"\n`;
-                        } else if (/^(caption|subtitle)s?/.test(track.kind)) {
-                            playlistContent += `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs${episode.number}\",NAME=\"${track.label || 'Subtitle'}\",DEFAULT=${track.default ? 'YES' : 'NO'},URI=\"${track.file}\"\n`;
-                        }
-                    });
-                }
-                playlistContent += `#EXTINF:-1,${episode.filename}\n`;
-                playlistContent += `${linkObj.stream}\n`;
-            });
-            return playlistContent;
-        }
-
-        // Select Button click event handler
-        function onSelectBtnPressed(button, episodes, qualitySection) {
-            const episodeItems = qualitySection.querySelector('.anlink-episode-list').querySelectorAll('.anlink-episode-item');
-            const checkboxes = Array.from(qualitySection.querySelectorAll('.anlink-episode-item input[type="checkbox"]'));
-            const allChecked = checkboxes.every(cb => cb.checked);
-            const anyUnchecked = checkboxes.some(cb => !cb.checked);
-
-            if (anyUnchecked || allChecked === false) { // If any unchecked OR not all are checked (for the first click when none are checked)
-                checkboxes.forEach(checkbox => { checkbox.checked = true; }); // Check all
-                // Select all link texts
-                const range = new Range();
-                range.selectNodeContents(episodeItems[0]);
-                range.setEndAfter(episodeItems[episodeItems.length - 1]);
-                window.getSelection().removeAllRanges();
-                window.getSelection().addRange(range);
-                button.textContent = 'Deselect All'; // Change button text to indicate deselect
-            } else { // If all are already checked
-                checkboxes.forEach(checkbox => { checkbox.checked = false; }); // Uncheck all
-                window.getSelection().removeAllRanges(); // Clear selection
-                button.textContent = 'Select All'; // Revert button text
+    // Helper to prepare m3u8 playlist string
+    function preparePlaylist(episodes, quality) {
+        let content = '#EXTM3U\n';
+        const referer = Object.values(episodes[0]?.links)[0]?.referer;
+        if (referer) content += `#EXTVLCOPT:http-referrer=${referer}\n`;
+        
+        episodes.forEach(ep => {
+            const link = ep.links[quality];
+            if (!link) return;
+            
+            if (link.tracks?.length) {
+                link.tracks.forEach(t => {
+                    const type = t.kind?.startsWith('audio') ? 'AUDIO' : /^(caption|subtitle)s?/.test(t.kind) ? 'SUBTITLES' : null;
+                    if (type) content += `#EXT-X-MEDIA:TYPE=${type},GROUP-ID="${type.toLowerCase()}${ep.number}",NAME="${t.label || type}",DEFAULT=${t.default ? 'YES' : 'NO'},URI="${t.file}"\n`;
+                });
             }
-            setTimeout(() => { button.textContent = checkboxes.some(cb => !cb.checked) ? 'Select All' : 'Deselect All'; }, 1500); // slight delay revert text
+            // content += `#EXT-X-STREAM-INF:BANDWIDTH=0,RESOLUTION=0x0,CODECS="mp4a.40.2,avc1.42E01E"${link.tracks?.length ? `,AUDIO="audio${ep.number}",SUBTITLES="subtitles${ep.number}"` : ''}\n`;  // commented out cuz ffmpeg (used by mpv) doesnt have https:// on its whitelist for EXT-X-MEDIA lines
+            content += `#EXTINF:-1,${ep.filename.replaceAll('/', '|')}\n${link.stream}\n`;
+        });
+        return content;
+    }
+
+    async function onExportAll(btn) {
+        const selected = getAllSelectedEpisodes();
+        if (!Object.keys(selected).length) return showToast('No episodes selected');
+        
+        let allContent = '#EXTM3U\n';
+        const qualities = Object.keys(selected).join(', ');
+        for (const [quality, items] of Object.entries(selected)) {
+            const epNums = items.map(i => i.querySelector('[data-epnum]').dataset.epnum);
+            const episodes = (window._anilink_episodes || []).filter(ep => ep.links[quality] && epNums.includes(ep.number));
+            const referer = episodes[0]?.links[quality]?.referer;
+            if (referer && !allContent.includes(referer)) allContent += `#EXTVLCOPT:http-referrer=${referer}\n`;
+            episodes.forEach(ep => {
+                const link = ep.links[quality];
+                if (link?.tracks?.length) link.tracks.forEach(t => {
+                    const type = t.kind?.startsWith('audio') ? 'AUDIO' : /^(caption|subtitle)s?/.test(t.kind) ? 'SUBTITLES' : null;
+                    if (type) allContent += `#EXT-X-MEDIA:TYPE=${type},GROUP-ID="${type.toLowerCase()}${ep.number}",NAME="${t.label || type}",DEFAULT=${t.default ? 'YES' : 'NO'},URI="${t.file}"\n`;
+                });
+                allContent += `#EXTINF:-1,${ep.filename.replaceAll('/', '|')}${GM_getValue('include_source_in_filename', true) ? ` [${quality}]` : ''}\n${link.stream}\n`;
+            });
         }
+        const fileName = (window._anilink_episodes?.[0]?.animeTitle || 'Anime') + (Object.keys(selected).length > 1 ? ` [${qualities}]` : `${GM_getValue('include_source_in_filename', true) ? ` [${qualities}]` : ''}`) + '.m3u8';
+        Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([allContent], { type: 'application/vnd.apple.mpegurl' })), download: fileName }).click();
+        btn.textContent = 'Exported';
+        setTimeout(() => btn.textContent = 'Export', 1000);
+    }
 
-        // copySelectedLinks click event handler
-        function onCopyBtnClicked(button, episodes, qualitySection) {
-            const selectedItems = _getSelectedEpisodeItems(qualitySection);
-            const linksToCopy = selectedItems.length ? selectedItems.map(item => item.querySelector('.anlink-episode-link').href) : Array.from(qualitySection.querySelectorAll('.anlink-episode-item')).map(item => item.querySelector('.anlink-episode-link').href);
-
-            const string = linksToCopy.join('\n');
-            navigator.clipboard.writeText(string);
-            button.textContent = 'Copied Selected';
-            setTimeout(() => { button.textContent = 'Copy'; }, 1000);
+    async function onPlayAll(btn) {
+        const selected = getAllSelectedEpisodes();
+        if (!Object.keys(selected).length) return showToast('No episodes selected');
+        
+        btn.textContent = 'Processing...';
+        let allContent = '#EXTM3U\n';
+        for (const [quality, items] of Object.entries(selected)) {
+            const epNums = items.map(i => i.querySelector('[data-epnum]').dataset.epnum);
+            const episodes = (window._anilink_episodes || []).filter(ep => ep.links[quality] && epNums.includes(ep.number));
+            const referer = episodes[0]?.links[quality]?.referer;
+            if (referer && !allContent.includes(referer)) allContent += `#EXTVLCOPT:http-referrer=${referer}\n`;
+            episodes.forEach(ep => {
+                const link = ep.links[quality];
+                if (link?.tracks?.length) link.tracks.forEach(t => {
+                    const type = t.kind?.startsWith('audio') ? 'AUDIO' : /^(caption|subtitle)s?/.test(t.kind) ? 'SUBTITLES' : null;
+                    if (type) allContent += `#EXT-X-MEDIA:TYPE=${type},GROUP-ID="${type.toLowerCase()}${ep.number}",NAME="${t.label || type}",DEFAULT=${t.default ? 'YES' : 'NO'},URI="${t.file}"\n`;
+                });
+                allContent += `#EXTINF:-1,${ep.filename.replaceAll('/', '|')}${GM_getValue('include_source_in_filename', true) ? ` [${quality}]` : ''}\n${link.stream}\n`;
+            });
         }
-
-        // exportToPlaylist click event handler
-        function onExportBtnClicked(button, episodes, qualitySection) {
-            const quality = qualitySection.dataset.quality;
-            const selectedItems = _getSelectedEpisodeItems(qualitySection);
-
-            const items = selectedItems.length ? selectedItems : Array.from(qualitySection.querySelectorAll('.anlink-episode-item'));
-            const playlist = _preparePlaylist(episodes.filter(ep => items.find(i => i.querySelector(`[data-epnum="${ep.number}"]`))), quality);
-            const fileName = JSON.parse(decodeURI(items[0]?.querySelector('.anlink-episode-link')?.dataset.ep)).animeTitle + `${GM_getValue('include_source_in_filename', true) ? ` [${quality}]` : ''}.m3u8`;
-            const file = new Blob([playlist], { type: 'application/vnd.apple.mpegurl' });
-            const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(file), download: fileName });
-            a.click();
-
-            button.textContent = 'Exported Selected';
-            setTimeout(() => { button.textContent = 'Export'; }, 1000);
-        }
-
-        // Play click event handler
-        async function onPlayBtnClicked(button, episodes, qualitySection) {
-            const quality = qualitySection.dataset.quality;
-            const selectedEpisodeItems = _getSelectedEpisodeItems(qualitySection);
-            const items = selectedEpisodeItems.length ? selectedEpisodeItems : Array.from(qualitySection.querySelectorAll('.anlink-episode-item'));
-            const epList = episodes.filter(ep => items.find(i => i.querySelector(`[data-epnum="${ep.number}"]`))).filter(Boolean);
-
-            button.textContent = 'Processing...';
-            const playlistContent = _preparePlaylist(epList, quality);
-            const uploadUrl = await GM_fetch("https://paste.rs/", {
-                method: "POST",
-                body: playlistContent
-            }).then(r => r.text()).then(t => t + '.m3u8');
-            console.log(`Playlist URL:`, uploadUrl);
-
-            // Use mpv:// protocol to pass the paste.rs link to mpv (requires mpv-handler installed)
-            const mpvUrl = 'mpv://play/' + safeBtoa(uploadUrl.trim()) + '/?v_title=' + safeBtoa(epList[0].animeTitle);
-            location.replace(mpvUrl);
-
-            button.textContent = 'Sent to MPV';
-            setTimeout(() => { button.textContent = 'Play with MPV'; }, 2000);
-            setTimeout(() => {
-                showToast('If nothing happened, you need to install <a href="https://github.com/akiirui/mpv-handler" target="_blank" style="color:#1976d2;">mpv-handler</a> to enable this feature.');
-            }, 1000);
-        }
+        
+        // Use mpv-handler:// protocol to pass the paste.rs link to mpv (requires mpv-handler installed)
+        const url = await GM_fetch('https://paste.rs/', { method: 'POST', body: allContent }).then(r => r.text()).then(t => t + '.m3u8');
+        console.log(`Playlist URL:`, url);
+        location.replace('mpv-handler://play/' + safeBtoa(url) + '/?v_title=' + safeBtoa((window._anilink_episodes?.[0]?.animeTitle || 'Anime')));
+        
+        btn.textContent = 'Sent to MPV';
+        setTimeout(() => { btn.textContent = 'Play with MPV'; showToast('If nothing happened, install v0.4.0+ of <a href="https://github.com/akiirui/mpv-handler" target="_blank" style="color:#1976d2;">mpv-handler</a>.'); }, 1000);
     }
 }
 
@@ -1519,55 +1683,103 @@ async function applyEpisodeRangeFilter(allEpLinks) {
  ***************************************************************/
 let toasts = [];
 
-function showToast(message) {
+function showToast(message, duration = 5000) {
     const maxToastHeight = window.innerHeight * 0.5;
-    const toastHeight = 50; // Approximate height of each toast
+    const toastHeight = 70;
     const maxToasts = Math.floor(maxToastHeight / toastHeight);
 
     console.log(message);
 
+    // Inject toast styles if not already present
+    if (!document.getElementById('anlink-toast-styles')) {
+        GM_addStyle(`
+            @keyframes anlink-toast-slide-in { from { transform: translateX(400px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+            @keyframes anlink-toast-slide-out { from { transform: translateX(0); opacity: 1; } to { transform: translateX(400px); opacity: 0; } }
+            .anlink-toast { position: fixed; right: 20px; min-width: 300px; max-width: 400px; background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%); border: 1px solid rgba(0, 0, 0, 0.08); border-radius: 12px; padding: 16px 20px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08); z-index: 10000; display: flex; align-items: flex-start; gap: 12px; animation: anlink-toast-slide-in 0.3s cubic-bezier(0.16, 1, 0.3, 1); backdrop-filter: blur(10px); transition: top 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+            .anlink-toast.slide-out { animation: anlink-toast-slide-out 0.3s cubic-bezier(0.7, 0, 0.84, 0) forwards; }
+            .anlink-toast-icon { flex-shrink: 0; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #26a69a 0%, #20847a 100%); border-radius: 50%; color: white; font-size: 14px; font-weight: bold; }
+            .anlink-toast-content { flex: 1; color: #1a1a1a; font-size: 14px; line-height: 1.5; font-weight: 500; }
+            .anlink-toast-content a { color: #26a69a; text-decoration: none; font-weight: 600; border-bottom: 1px solid transparent; transition: border-color 0.2s; }
+            .anlink-toast-content a:hover { border-bottom-color: #26a69a; }
+            .anlink-toast-close { flex-shrink: 0; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.05); border: none; border-radius: 50%; color: #666; cursor: pointer; font-size: 16px; line-height: 1; transition: all 0.2s; padding: 0; }
+            .anlink-toast-close:hover { background: rgba(0, 0, 0, 0.1); color: #1a1a1a; transform: scale(1.1); }
+            /* Dark mode support */
+            @media (prefers-color-scheme: dark) { 
+                .anlink-toast { background: linear-gradient(135deg, #2d2d2d 0%, #1a1a1a 100%); border-color: rgba(255, 255, 255, 0.1); }
+                .anlink-toast-content { color: #e0e0e0; }
+                .anlink-toast-close { background: rgba(255, 255, 255, 0.1); color: #ccc; }
+                .anlink-toast-close:hover { background: rgba(255, 255, 255, 0.2); color: #fff; }
+            }
+        `);
+        const styleTag = document.createElement('style');
+        styleTag.id = 'anlink-toast-styles';
+        document.head.appendChild(styleTag);
+    }
+
     // Create the new toast element
-    const x = document.createElement("div");
-    x.innerHTML = message;
-    x.style.color = "#000";
-    x.style.backgroundColor = "#fdba2f";
-    x.style.borderRadius = "10px";
-    x.style.padding = "10px";
-    x.style.position = "fixed";
-    x.style.top = `${toasts.length * toastHeight}px`;
-    x.style.right = "5px";
-    x.style.fontSize = "large";
-    x.style.fontWeight = "bold";
-    x.style.zIndex = "10000";
-    x.style.display = "block";
-    x.style.borderColor = "#565e64";
-    x.style.transition = "right 2s ease-in-out, top 0.5s ease-in-out";
-    document.body.appendChild(x);
+    const toast = document.createElement("div");
+    toast.className = "anlink-toast";
+    toast.style.top = `${20 + toasts.length * toastHeight}px`;
+    
+    // Infer toast type and icon from message content
+    const lowerMsg = message.toString().toLowerCase();
+    const iconMap = { error: ['❌', '#ef5350'], success: ['✅', '#66bb6a'], warning: ['⚠️', '#ffa726'], loading: ['⏳', '#42a5f5'], help: ['💡', '#ab47bc'], info: ['ℹ️', null] };
+    const typeChecks = [
+        [['error', 'failed', 'couldn\'t', 'could not'], 'error'],
+        [['success', 'complete', 'copied', 'exported', 'sent to'], 'success'],
+        [['warning', 'no episodes', 'not found', 'rate limited'], 'warning'],
+        [['loading', 'fetching', 'extracting', 'processing'], 'loading'],
+        [['install', 'mpv', 'handler'], 'help']
+    ];
+    const toastType = typeChecks.find(([keywords]) => keywords.some(k => lowerMsg.includes(k)))?.[1] || 'info';
+    const [icon, borderColor] = iconMap[toastType];
+    if (borderColor) toast.style.borderLeft = `4px solid ${borderColor}`;
+
+    toast.innerHTML = `
+        <div class="anlink-toast-icon">${icon}</div>
+        <div class="anlink-toast-content">${message}</div>
+        <button class="anlink-toast-close" aria-label="Close">×</button>
+    `;
+    
+    document.body.appendChild(toast);
+
+    // Close button handler
+    const closeBtn = toast.querySelector('.anlink-toast-close');
+    const removeToast = () => {
+        toast.classList.add('slide-out');
+        setTimeout(() => {
+            if (document.body.contains(toast)) document.body.removeChild(toast);
+            toasts = toasts.filter(t => t !== toast);
+            // Reposition remaining toasts
+            toasts.forEach((t, index) => {
+                t.style.top = `${20 + index * toastHeight}px`;
+            });
+        }, 300);
+    };
+    
+    closeBtn.addEventListener('click', removeToast);
 
     // Add the new toast to the list
-    toasts.push(x);
+    toasts.push(toast);
 
-    // Remove the toast after it slides out
-    setTimeout(() => {
-        x.style.right = "-1000px";
-    }, 3000);
-
-    setTimeout(() => {
-        x.style.display = "none";
-        if (document.body.contains(x)) document.body.removeChild(x);
-        toasts = toasts.filter(toast => toast !== x);
-        // Move remaining toasts up
-        toasts.forEach((toast, index) => {
-            toast.style.top = `${index * toastHeight}px`;
-        });
-    }, 4000);
+    // Auto-remove after delay (or dont remove if duration is 0)
+    if (duration > 0) {
+        setTimeout(() => removeToast(), duration);
+    }
 
     // Limit the number of toasts to maxToasts
     if (toasts.length > maxToasts) {
         const oldestToast = toasts.shift();
-        document.body.removeChild(oldestToast);
-        toasts.forEach((toast, index) => {
-            toast.style.top = `${index * toastHeight}px`;
+        oldestToast.classList.add('slide-out');
+        setTimeout(() => {
+            if (document.body.contains(oldestToast)) {
+                document.body.removeChild(oldestToast);
+            }
+        }, 300);
+        
+        // Reposition remaining toasts
+        toasts.forEach((t, index) => {
+            t.style.top = `${20 + index * toastHeight}px`;
         });
     }
 }
@@ -1576,3 +1788,7 @@ function showToast(message) {
 function showMPVHandlerHelp() {
     showToast('To play directly in MPV, install <a href="https://github.com/akiirui/mpv-handler" target="_blank" style="color:#1976d2;">mpv-handler</a> and reload this page.');
 }
+
+// Simple query selector shortcuts
+const _$ = s => document.querySelector(s);
+const _$$ = s => document.querySelectorAll(s);
